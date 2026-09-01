@@ -1,0 +1,49 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - misspell
+    - nilerr
+    - noctx
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          arguments: [checkPrivateReceivers]
+        - name: package-comments
+    gocritic:
+      enabled-tags: [diagnostic, style, performance]
+      disabled-checks:
+        # The gateway's error paths read better with explicit if/else than with
+        # a switch on two branches.
+        - ifElseChain
+        # registry.Route and registry.Decision are deliberately value types:
+        # they are immutable entries in a snapshot the data plane reads without
+        # locking, and passing them by pointer would invite aliasing bugs to
+        # save a copy that is already dwarfed by the TCP session it describes.
+        - hugeParam
+
+  exclusions:
+    rules:
+      # Test helpers legitimately ignore errors on cleanup paths, and the plain
+      # net.Dial/net.Listen helpers are clearer than a ListenConfig in a test
+      # that already bounds itself with t.Cleanup and explicit deadlines.
+      - path: _test\.go
+        linters: [errcheck, unparam, gocritic, noctx]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
