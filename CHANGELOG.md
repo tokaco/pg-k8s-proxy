@@ -12,6 +12,14 @@ This file is maintained by release-please. Do not edit released sections by hand
 they are regenerated from Conventional Commit messages.
 -->
 
+## [0.1.1](https://github.com/tokaco/pg-k8s-proxy/compare/v0.1.0...v0.1.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* revisit routes that lose a database name to another route ([248c02f](https://github.com/tokaco/pg-k8s-proxy/commit/248c02f903a86f1a2d29c56ac9b2d426906b7b8d))
+* stop one unreadable backend from freezing the routing table ([3a4c5e4](https://github.com/tokaco/pg-k8s-proxy/commit/3a4c5e443ff533d0c86d221b4d32259185fb392f))
+
 ## 0.1.0
 
 Initial release: the proxy is rebuilt as a Kubernetes operator with a Helm chart.

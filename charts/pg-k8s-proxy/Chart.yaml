@@ -1,25 +1,18 @@
 apiVersion: v2
 name: pg-k8s-proxy
-description: A PostgreSQL gateway and Kubernetes operator that routes client connections to the instance serving the requested database.
+description: >-
+  A PostgreSQL gateway and Kubernetes operator that routes client connections to
+  the instance serving the requested database.
 type: application
-
-# Both versions move together and are maintained by release-please; the
-# annotations below are what it rewrites. Do not edit them by hand.
-version: 0.1.0 # x-release-please-version
-appVersion: "0.1.0" # x-release-please-version
-
-# 1.29 is the floor because the chart's CRD relies on CEL validation rules
-# (x-kubernetes-validations), which reached GA in that release.
-kubeVersion: ">=1.29.0-0"
-
+version: 0.1.1
+appVersion: 0.1.0
+kubeVersion: '>=1.29.0-0'
 home: https://github.com/tokaco/pg-k8s-proxy
 sources:
   - https://github.com/tokaco/pg-k8s-proxy
-
 maintainers:
   - name: tokaco
     url: https://github.com/tokaco
-
 keywords:
   - postgresql
   - postgres
@@ -28,12 +21,11 @@ keywords:
   - operator
   - database
   - routing
-
 annotations:
   category: Database
   licenses: Apache-2.0
   artifacthub.io/license: Apache-2.0
-  artifacthub.io/operator: "true"
+  artifacthub.io/operator: 'true'
   artifacthub.io/operatorCapabilities: Seamless Upgrades
   artifacthub.io/crds: |
     - kind: PostgresRoute
