@@ -12,6 +12,13 @@ This file is maintained by release-please. Do not edit released sections by hand
 they are regenerated from Conventional Commit messages.
 -->
 
+## [0.1.2](https://github.com/tokaco/pg-k8s-proxy/compare/v0.1.1...v0.1.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* publish the release instead of leaving it unbuilt ([092413b](https://github.com/tokaco/pg-k8s-proxy/commit/092413b73fad7fefb53c86c59f84120a3b425f15))
+
 ## [0.1.1](https://github.com/tokaco/pg-k8s-proxy/compare/v0.1.0...v0.1.1) (2026-09-01)
 
 
