@@ -8,10 +8,13 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	toolscache "k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
@@ -47,6 +50,15 @@ type RouteTableBuilder struct {
 	WatchSecrets bool
 	// Debounce coalesces event bursts. Defaults to DefaultDebounce.
 	Debounce time.Duration
+
+	// StatusEvents receives one event per route whose routing decision changed.
+	//
+	// A route only ever gets a watch event for changes to itself, so a route
+	// that loses its database name to a newly created one is never reconciled
+	// and its status goes on advertising a claim it no longer holds. Feeding
+	// the affected routes back to the status reconciler is what keeps the
+	// reported state honest. Optional; nil disables the notifications.
+	StatusEvents chan<- event.GenericEvent
 
 	trigger chan struct{}
 	// onRebuild, when set, is invoked after every successful rebuild.
@@ -161,14 +173,15 @@ func (b *RouteTableBuilder) rebuild(ctx context.Context) error {
 	}
 
 	snapshot := registry.Build(ctx, routes.Items, b.Resolver, b.ClusterDomain)
-	previous := b.Store.Load().Table
+	previous := b.Store.Load()
 
 	b.Store.Store(snapshot)
 	proxy.SetRouteCount(snapshot.Table.Len())
+	b.notifyChanged(previous, snapshot)
 
 	// Only log at info level when the set of routable databases actually moved,
 	// so an idle cluster stays quiet.
-	if previous.Len() != snapshot.Table.Len() {
+	if previous.Table.Len() != snapshot.Table.Len() {
 		logger.Info("routing table updated",
 			"routes", len(routes.Items),
 			"routable", snapshot.Table.Len(),
@@ -182,6 +195,59 @@ func (b *RouteTableBuilder) rebuild(ctx context.Context) error {
 		b.onRebuild(snapshot)
 	}
 	return nil
+}
+
+// notifyChanged enqueues every route whose decision differs from the previous
+// snapshot, so the status reconciler revisits routes that a change to some
+// other route affected.
+//
+// Sends are non-blocking. On a replica that is not the leader nothing drains
+// the channel, and dropping there is correct: that replica writes no status,
+// and when it is elected the informer's initial sync reconciles every route
+// anyway.
+func (b *RouteTableBuilder) notifyChanged(previous, current *registry.Snapshot) {
+	if b.StatusEvents == nil {
+		return
+	}
+
+	for key, now := range current.Decisions {
+		before, existed := previous.Decisions[key]
+		if existed && !decisionChanged(before, now) {
+			continue
+		}
+		b.notify(key)
+	}
+}
+
+func (b *RouteTableBuilder) notify(key types.NamespacedName) {
+	evt := event.GenericEvent{Object: &pgproxyv1alpha1.PostgresRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+	}}
+	select {
+	case b.StatusEvents <- evt:
+	default:
+	}
+}
+
+// decisionChanged reports whether two decisions differ in anything the status
+// records. Resolution errors are compared by message: a fresh error value is
+// allocated on every rebuild, so comparing them by identity would report a
+// change every time and reconcile an unresolvable route forever.
+func decisionChanged(before, now registry.Decision) bool {
+	if before.Database != now.Database ||
+		before.Accepted != now.Accepted ||
+		before.ConflictsWith != now.ConflictsWith ||
+		before.Endpoint != now.Endpoint {
+		return true
+	}
+	return errorMessage(before.ResolveErr) != errorMessage(now.ResolveErr)
+}
+
+func errorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 var _ manager.Runnable = &RouteTableBuilder{}

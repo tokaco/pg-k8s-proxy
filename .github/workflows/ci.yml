@@ -394,19 +394,26 @@ jobs:
         run: |
           set -euo pipefail
           kubectl apply -f examples/10-routes.yaml
-          for _ in $(seq 1 30); do
-            if kubectl get postgresroute orders \
-                 -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' \
-                 2>/dev/null | grep -q True; then
-              break
-            fi
+
+          # billing-override carries priority 10, so the discovered route must
+          # lose the name. Wait on that condition itself rather than on some
+          # other route being programmed: the losing route is reconciled only
+          # because the operator feeds it back, which is precisely what this
+          # step exists to verify.
+          reason=""
+          for _ in $(seq 1 36); do
+            reason=$(kubectl get postgresroute postgres-billing-discovered \
+              -o jsonpath='{.status.conditions[?(@.type=="Accepted")].reason}' 2>/dev/null || true)
+            [ "${reason}" = "DatabaseNameConflict" ] && break
             sleep 5
           done
-          # billing-override carries priority 10, so the discovered route loses.
-          kubectl get postgresroute postgres-billing-discovered \
-            -o jsonpath='{.status.conditions[?(@.type=="Accepted")].reason}' \
-            | grep -q DatabaseNameConflict
+
           kubectl get postgresroutes -A
+          if [ "${reason}" != "DatabaseNameConflict" ]; then
+            echo "::error::the discovered route kept its claim on \"billing\"; Accepted reason is \"${reason}\""
+            kubectl get postgresroute postgres-billing-discovered -o yaml
+            exit 1
+          fi
 
       - name: Helm test
         run: helm test pg-k8s-proxy --namespace pgproxy --timeout 3m

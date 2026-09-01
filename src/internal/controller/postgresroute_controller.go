@@ -9,7 +9,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	pgproxyv1alpha1 "github.com/tokaco/pg-k8s-proxy/api/v1alpha1"
 	"github.com/tokaco/pg-k8s-proxy/internal/registry"
@@ -23,6 +26,10 @@ type PostgresRouteReconciler struct {
 	client.Client
 	// Store is the snapshot the RouteTableBuilder publishes.
 	Store *registry.Store
+	// Events carries routes whose decision changed because some other route
+	// changed. Without it a route that loses a database-name conflict is never
+	// revisited, because it gets no watch event of its own.
+	Events <-chan event.GenericEvent
 }
 
 // +kubebuilder:rbac:groups=pgproxy.io,resources=postgresroutes,verbs=get;list;watch;create;update;patch;delete
@@ -35,10 +42,16 @@ func (r *PostgresRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Store == nil {
 		return fmt.Errorf("PostgresRouteReconciler.Store is required")
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		Named("postgresroute").
-		For(&pgproxyv1alpha1.PostgresRoute{}).
-		Complete(r)
+		For(&pgproxyv1alpha1.PostgresRoute{})
+
+	if r.Events != nil {
+		builder = builder.WatchesRawSource(
+			source.Channel(r.Events, &handler.EnqueueRequestForObject{}))
+	}
+
+	return builder.Complete(r)
 }
 
 // Reconcile writes the decision for one route into its status.

@@ -17,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -75,17 +76,27 @@ func run(ctx context.Context, cfg config.Config, warnings []string) error {
 
 	store := registry.NewStore()
 
+	// Carries routes whose decision changed because a different route changed,
+	// so the status reconciler revisits them. Buffered and written to without
+	// blocking, so a replica that is not the leader simply drops them.
+	statusEvents := make(chan event.GenericEvent, 1024)
+
 	tableBuilder := &controller.RouteTableBuilder{
 		Store:         store,
 		ClusterDomain: cfg.Watch.ClusterDomain,
 		WatchSecrets:  cfg.Watch.WatchSecrets,
+		StatusEvents:  statusEvents,
 	}
 	if err := tableBuilder.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setting up the routing table builder: %w", err)
 	}
 
 	if cfg.Role.RunsManager() {
-		routeReconciler := &controller.PostgresRouteReconciler{Client: mgr.GetClient(), Store: store}
+		routeReconciler := &controller.PostgresRouteReconciler{
+			Client: mgr.GetClient(),
+			Store:  store,
+			Events: statusEvents,
+		}
 		if err := routeReconciler.SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up the PostgresRoute controller: %w", err)
 		}
