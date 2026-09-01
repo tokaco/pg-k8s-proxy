@@ -77,7 +77,7 @@ func (b *RouteTableBuilder) SetupWithManager(mgr ctrl.Manager) error {
 		b.Cache = mgr.GetCache()
 	}
 	if b.Resolver == nil {
-		b.Resolver = registry.NewClientResolver(b.Cache)
+		b.Resolver = registry.NewClientResolver(b.Cache).WithCABundles(b.WatchSecrets)
 	}
 	if b.ClusterDomain == "" {
 		return fmt.Errorf("RouteTableBuilder.ClusterDomain is required")

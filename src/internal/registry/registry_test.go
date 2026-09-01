@@ -319,3 +319,97 @@ func TestStoreStartsEmptyAndPublishesSnapshots(t *testing.T) {
 		t.Error("storing nil did not yield an empty table")
 	}
 }
+
+// blockingResolver never returns until its context is done, which is what a
+// controller-runtime cache read does when the informer it starts can never
+// sync because RBAC forbids the list.
+type blockingResolver struct{ started chan struct{} }
+
+func (b blockingResolver) ResolveServicePort(ctx context.Context, _, _ string, _ intstr.IntOrString) (int32, error) {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+
+func (b blockingResolver) LoadCABundle(ctx context.Context, _, _, _ string) (*x509.CertPool, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// One route pointing at something unreadable must not freeze the routing table
+// for every other route. Before this bound, a single such route wedged the
+// rebuild loop and no route anywhere got a status again.
+func TestBuildIsNotStalledByABlockingResolver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for the resolve timeout")
+	}
+
+	routes := []pgproxyv1alpha1.PostgresRoute{
+		serviceRoute("a", "stuck", "stuck", "unreadable", time.Hour, 0),
+	}
+
+	done := make(chan *Snapshot, 1)
+	go func() {
+		done <- Build(context.Background(), routes, blockingResolver{started: make(chan struct{}, 1)}, clusterDomain)
+	}()
+
+	select {
+	case snapshot := <-done:
+		decision, _ := snapshot.Decision(types.NamespacedName{Namespace: "a", Name: "stuck"})
+		if decision.ResolveErr == nil {
+			t.Error("a resolution that timed out was not recorded as an error")
+		}
+	case <-time.After(ResolveTimeout + 20*time.Second):
+		t.Fatal("Build never returned; a blocking resolver stalls the whole table")
+	}
+}
+
+// The timeout applies per route, so a healthy route resolves normally even when
+// another one in the same build is hung.
+func TestBuildResolvesHealthyRoutesAlongsideABlockedOne(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for the resolve timeout")
+	}
+
+	mixed := mixedResolver{
+		blocked: "unreadable",
+		ports:   map[string]int32{"b/good": 5432},
+	}
+	routes := []pgproxyv1alpha1.PostgresRoute{
+		serviceRoute("a", "stuck", "stuck", "unreadable", time.Hour, 0),
+		serviceRoute("b", "healthy", "healthy", "good", time.Hour, 0),
+	}
+
+	snapshot := Build(context.Background(), routes, mixed, clusterDomain)
+
+	if _, ok := snapshot.Table.Lookup("healthy"); !ok {
+		t.Errorf("the healthy route was not routable; table has %v", snapshot.Table.Databases())
+	}
+	if _, ok := snapshot.Table.Lookup("stuck"); ok {
+		t.Error("the unresolvable route was added to the table")
+	}
+}
+
+// mixedResolver blocks for one Service name and answers normally otherwise.
+type mixedResolver struct {
+	blocked string
+	ports   map[string]int32
+}
+
+func (m mixedResolver) ResolveServicePort(ctx context.Context, namespace, name string, _ intstr.IntOrString) (int32, error) {
+	if name == m.blocked {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
+	if port, ok := m.ports[namespace+"/"+name]; ok {
+		return port, nil
+	}
+	return 0, fmt.Errorf("service %s/%s not found", namespace, name)
+}
+
+func (m mixedResolver) LoadCABundle(context.Context, string, string, string) (*x509.CertPool, error) {
+	return x509.NewCertPool(), nil
+}

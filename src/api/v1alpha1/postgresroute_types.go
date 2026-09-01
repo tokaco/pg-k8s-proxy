@@ -165,6 +165,7 @@ const (
 	ReasonBackendNotFound  = "BackendNotFound"
 	ReasonPortNotFound     = "PortNotFound"
 	ReasonInvalidBackend   = "InvalidBackend"
+	ReasonCABundleFailed   = "CABundleUnavailable"
 	ReasonProgrammed       = "Programmed"
 	ReasonNotProgrammed    = "NotProgrammed"
 )

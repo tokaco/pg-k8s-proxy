@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -153,18 +154,60 @@ func TestReconcileReportsAnUnresolvableBackend(t *testing.T) {
 	}
 }
 
-func TestReconcileClassifiesAPortFailureSeparately(t *testing.T) {
-	route := routeObject("apps", "billing", "billing")
+// A missing Service, a bad port reference, and an unreadable CA bundle are
+// three different incidents with three different fixes, so status has to tell
+// them apart rather than lumping them under one catch-all reason.
+func TestReconcileClassifiesResolutionFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "missing service",
+			err:  fmt.Errorf("%w: service apps/pg", registry.ErrBackendNotFound),
+			want: pgproxyv1alpha1.ReasonBackendNotFound,
+		},
+		{
+			name: "api server not-found",
+			err:  apierrors.NewNotFound(schema.GroupResource{Resource: "services"}, "pg"),
+			want: pgproxyv1alpha1.ReasonBackendNotFound,
+		},
+		{
+			name: "bad port reference",
+			err:  fmt.Errorf(`%w: service apps/pg has no port named "postgresql"`, registry.ErrPortNotFound),
+			want: pgproxyv1alpha1.ReasonPortNotFound,
+		},
+		{
+			name: "unreadable CA bundle",
+			err:  fmt.Errorf("%w: reading Secrets is disabled", registry.ErrCABundle),
+			want: pgproxyv1alpha1.ReasonCABundleFailed,
+		},
+		{
+			name: "malformed backend",
+			err:  fmt.Errorf("%w: backend.service is unset", registry.ErrInvalidBackend),
+			want: pgproxyv1alpha1.ReasonInvalidBackend,
+		},
+		{
+			name: "anything else",
+			err:  errors.New("something unexpected"),
+			want: pgproxyv1alpha1.ReasonInvalidBackend,
+		},
+	}
 
-	updated := reconcileRoute(t, route, &registry.Decision{
-		Database:   "billing",
-		Accepted:   true,
-		ResolveErr: errors.New(`service apps/pg has no port named "postgresql"`),
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			updated := reconcileRoute(t, routeObject("apps", "billing", "billing"), &registry.Decision{
+				Database:   "billing",
+				Accepted:   true,
+				ResolveErr: tc.err,
+			})
 
-	resolved := meta.FindStatusCondition(updated.Status.Conditions, pgproxyv1alpha1.ConditionResolved)
-	if resolved.Reason != pgproxyv1alpha1.ReasonPortNotFound {
-		t.Errorf("Resolved reason = %q, want %q", resolved.Reason, pgproxyv1alpha1.ReasonPortNotFound)
+			resolved := meta.FindStatusCondition(updated.Status.Conditions, pgproxyv1alpha1.ConditionResolved)
+			if resolved.Reason != tc.want {
+				t.Errorf("Resolved reason = %q, want %q", resolved.Reason, tc.want)
+			}
+		})
 	}
 }
 

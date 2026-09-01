@@ -10,17 +10,41 @@ package registry
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	pgproxyv1alpha1 "github.com/tokaco/pg-k8s-proxy/api/v1alpha1"
 )
+
+// Classes of resolution failure. The controller reports each as its own status
+// reason, so an operator can tell a missing Service from a bad port reference
+// from an unreadable CA bundle without parsing the message.
+var (
+	// ErrBackendNotFound means the referenced Service does not exist.
+	ErrBackendNotFound = errors.New("backend not found")
+	// ErrPortNotFound means the Service exists but exposes no such port.
+	ErrPortNotFound = errors.New("port not found")
+	// ErrInvalidBackend means the backend reference is internally inconsistent.
+	ErrInvalidBackend = errors.New("invalid backend")
+	// ErrCABundle means the backend CA bundle could not be loaded.
+	ErrCABundle = errors.New("CA bundle unavailable")
+)
+
+// ResolveTimeout bounds the resolution of a single route.
+//
+// A cache read can block: controller-runtime starts an informer lazily on first
+// use and waits for it to sync, which never happens if RBAC forbids the list.
+// Without this bound one route pointing at an unreadable object would wedge the
+// rebuild loop and freeze the routing table for every other route as well.
+const ResolveTimeout = 10 * time.Second
 
 // Resolver supplies the cluster state needed to turn a backend reference into a
 // concrete address. It is backed by the shared controller-runtime cache.
@@ -197,7 +221,7 @@ func Build(ctx context.Context, routes []pgproxyv1alpha1.PostgresRoute, resolver
 		}
 		winners[database] = key
 
-		resolved, err := resolve(ctx, route, resolver, clusterDomain)
+		resolved, err := resolveBounded(ctx, route, resolver, clusterDomain)
 		if err != nil {
 			result.Decisions[key] = Decision{Database: database, Accepted: true, ResolveErr: err}
 			continue
@@ -231,6 +255,14 @@ func less(a, b *pgproxyv1alpha1.PostgresRoute) bool {
 	return a.Name < b.Name
 }
 
+// resolveBounded applies ResolveTimeout so a single slow or hung lookup cannot
+// hold up the rest of the table.
+func resolveBounded(ctx context.Context, route *pgproxyv1alpha1.PostgresRoute, resolver Resolver, clusterDomain string) (Route, error) {
+	ctx, cancel := context.WithTimeout(ctx, ResolveTimeout)
+	defer cancel()
+	return resolve(ctx, route, resolver, clusterDomain)
+}
+
 func resolve(ctx context.Context, route *pgproxyv1alpha1.PostgresRoute, resolver Resolver, clusterDomain string) (Route, error) {
 	out := Route{
 		Source:         types.NamespacedName{Namespace: route.Namespace, Name: route.Name},
@@ -242,7 +274,7 @@ func resolve(ctx context.Context, route *pgproxyv1alpha1.PostgresRoute, resolver
 	case pgproxyv1alpha1.BackendTypeService:
 		backend := route.Spec.Backend.Service
 		if backend == nil {
-			return Route{}, fmt.Errorf("backend.type is Service but backend.service is unset")
+			return Route{}, fmt.Errorf("%w: backend.type is Service but backend.service is unset", ErrInvalidBackend)
 		}
 		namespace := backend.Namespace
 		if namespace == "" {
@@ -258,7 +290,7 @@ func resolve(ctx context.Context, route *pgproxyv1alpha1.PostgresRoute, resolver
 	case pgproxyv1alpha1.BackendTypeAddress:
 		backend := route.Spec.Backend.Address
 		if backend == nil {
-			return Route{}, fmt.Errorf("backend.type is Address but backend.address is unset")
+			return Route{}, fmt.Errorf("%w: backend.type is Address but backend.address is unset", ErrInvalidBackend)
 		}
 		out.Host = backend.Host
 		out.Port = backend.Port
@@ -267,7 +299,7 @@ func resolve(ctx context.Context, route *pgproxyv1alpha1.PostgresRoute, resolver
 		}
 
 	default:
-		return Route{}, fmt.Errorf("unsupported backend type %q", route.Spec.Backend.Type)
+		return Route{}, fmt.Errorf("%w: unsupported backend type %q", ErrInvalidBackend, route.Spec.Backend.Type)
 	}
 
 	tls, err := resolveTLS(ctx, route, resolver)
@@ -303,7 +335,7 @@ func resolveTLS(ctx context.Context, route *pgproxyv1alpha1.PostgresRoute, resol
 	}
 	pool, err := resolver.LoadCABundle(ctx, route.Namespace, spec.CASecretRef.Name, key)
 	if err != nil {
-		return TLSConfig{}, fmt.Errorf("loading CA bundle: %w", err)
+		return TLSConfig{}, fmt.Errorf("%w: %w", ErrCABundle, err)
 	}
 	out.RootCAs = pool
 	return out, nil

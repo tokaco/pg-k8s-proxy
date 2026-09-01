@@ -71,7 +71,12 @@ spec:
 
 ---
 # Take over a name that service discovery also claims. The higher priority wins,
-# since discovered routes are generated with priority -100.
+# since discovered routes are generated with priority -100, and the discovered
+# route reports the conflict in its status rather than failing silently.
+#
+# This is the shape of a migration: "billing" is re-pointed at the analytics
+# instance, which holds that data under its own name, so targetDatabase keeps
+# the route working for clients that still connect to "billing".
 apiVersion: pgproxy.io/v1alpha1
 kind: PostgresRoute
 metadata:
@@ -79,6 +84,7 @@ metadata:
   namespace: default
 spec:
   database: billing
+  targetDatabase: analytics
   priority: 10
   backend:
     type: Service

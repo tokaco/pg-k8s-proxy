@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -176,13 +177,20 @@ func applyConditions(status *pgproxyv1alpha1.PostgresRouteStatus, route *pgproxy
 }
 
 // resolveFailureReason classifies a resolution error so that status readers can
-// branch on the reason rather than parse the message. IsNotFound unwraps, so a
-// Service the resolver could not find is recognised through the wrapping.
+// branch on the reason rather than parse the message. A missing Service, a bad
+// port reference, and an unreadable CA bundle are three different problems
+// calling for three different fixes.
 func resolveFailureReason(err error) string {
-	if apierrors.IsNotFound(err) {
+	switch {
+	case errors.Is(err, registry.ErrBackendNotFound), apierrors.IsNotFound(err):
 		return pgproxyv1alpha1.ReasonBackendNotFound
+	case errors.Is(err, registry.ErrPortNotFound):
+		return pgproxyv1alpha1.ReasonPortNotFound
+	case errors.Is(err, registry.ErrCABundle):
+		return pgproxyv1alpha1.ReasonCABundleFailed
+	default:
+		return pgproxyv1alpha1.ReasonInvalidBackend
 	}
-	return pgproxyv1alpha1.ReasonPortNotFound
 }
 
 // equalStatus reports whether two statuses are equivalent, ignoring condition
