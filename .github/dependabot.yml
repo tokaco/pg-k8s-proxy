@@ -12,12 +12,22 @@ updates:
       include: scope
     groups:
       # The Kubernetes libraries are released as one set and only work when
-      # their versions match, so they must move together.
+      # their versions match, so they must move together. They are v0 modules,
+      # where Go semver reads the middle digit as the minor version, so without
+      # the exclusion below the catch-all group swallows them and a Kubernetes
+      # upgrade arrives disguised as a routine patch bump.
       kubernetes:
         patterns:
           - "k8s.io/*"
           - "sigs.k8s.io/*"
+        update-types:
+          - major
+          - minor
+          - patch
       minor-and-patch:
+        exclude-patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
         update-types:
           - minor
           - patch

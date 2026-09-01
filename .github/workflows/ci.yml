@@ -41,6 +41,22 @@ jobs:
           git diff --exit-code -- go.mod go.sum \
             || { echo "::error::go.mod or go.sum is not tidy; run 'make tidy'"; exit 1; }
 
+      # A dependency bump can raise go.mod's directive on its own — controller
+      # runtime, for one, requires a newer Go with each minor. If that lands
+      # without the Dockerfile and this workflow moving too, the release image
+      # is built by a toolchain the tests never ran on, or fails to build at all.
+      - name: The Go version must agree everywhere
+        run: |
+          set -euo pipefail
+          workflow="${{ env.GO_VERSION }}"
+          gomod=$(grep -E '^go [0-9]' src/go.mod | awk '{print $2}' | cut -d. -f1,2)
+          dockerfile=$(grep -oE 'golang:[0-9]+\.[0-9]+' docker/Dockerfile | head -1 | cut -d: -f2)
+          echo "ci.yml=${workflow}  go.mod=${gomod}  Dockerfile=${dockerfile}"
+          if [ "${workflow}" != "${gomod}" ] || [ "${workflow}" != "${dockerfile}" ]; then
+            echo "::error::Go version differs: ci.yml=${workflow}, go.mod=${gomod}, Dockerfile=${dockerfile}. Raise all three in the same change."
+            exit 1
+          fi
+
       - name: Check formatting
         working-directory: src
         run: |

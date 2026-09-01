@@ -122,8 +122,20 @@ The workflows use only `GITHUB_TOKEN`; no secrets need to be configured. Two
 settings have to be right:
 
 - **Settings → Actions → General → Workflow permissions**: "Read and write
-  permissions", and "Allow GitHub Actions to create and approve pull requests"
-  so release-please can open its release PR.
+  permissions", and "Allow GitHub Actions to create and approve pull requests".
+
+  Without the second checkbox release-please fails with `GitHub Actions is not
+  permitted to create or approve pull requests` — but only once there is
+  actually something to release. While the newest tag sits on `HEAD` it finds
+  no releasable commits, opens nothing, and passes, so the misconfiguration
+  stays hidden until the first commit after a release.
+
+  As an alternative, set a `RELEASE_PLEASE_TOKEN` secret holding a personal
+  access token with `contents: write` and `pull-requests: write`. The workflow
+  prefers it when present. That lifts the checkbox requirement and additionally
+  lets the release pull request trigger CI, which a pull request opened by the
+  built-in token never does. Either way coverage is intact, because the release
+  workflow re-runs the whole suite against the tagged tree before publishing.
 - **Packages**: the first publish creates `pg-k8s-proxy` and
   `charts/pg-k8s-proxy` as private packages. Make them public if the release is
   meant to be installable without authentication.

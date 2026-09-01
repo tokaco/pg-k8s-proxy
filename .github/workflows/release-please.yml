@@ -21,6 +21,14 @@ jobs:
       - uses: googleapis/release-please-action@v5
         id: release
         with:
+          # Falls back to the built-in token, which needs "Allow GitHub Actions
+          # to create and approve pull requests" enabled under Settings ->
+          # Actions -> General. Supplying RELEASE_PLEASE_TOKEN instead lifts
+          # that requirement and additionally lets the release pull request
+          # trigger CI, which pull requests opened by the built-in token never
+          # do. Neither is a gap in coverage: the release workflow re-runs the
+          # whole suite against the tagged tree before it publishes anything.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
 
