@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/tokaco/pg-k8s-proxy/discussions
+    about: Ask how something works, or propose an idea before opening an issue.
+  - name: Report a security vulnerability
+    url: https://github.com/tokaco/pg-k8s-proxy/security/advisories/new
+    about: Report privately. Please do not open a public issue for security problems.

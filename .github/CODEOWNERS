@@ -1,0 +1,12 @@
+# Default owner for everything in the repository.
+*       @tokaco
+
+# The wire protocol and the routing table carry the correctness-critical logic;
+# changes there always want a maintainer's eyes.
+/src/internal/pgwire/    @tokaco
+/src/internal/registry/  @tokaco
+/src/api/                @tokaco
+
+# Release and supply-chain configuration.
+/.github/workflows/      @tokaco
+/.release-please-config.json  @tokaco

@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a capability the gateway does not have.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A few things are deliberately out of scope: connection pooling, load
+        balancing across replicas of one database, splitting reads from writes,
+        protocol 2.0, and GSSAPI encryption. Proposals for those need to make the
+        case for changing that decision, not just describe the feature.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you cannot do today? Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should the gateway do? If it changes the CRD or the chart values, show what that would look like.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including anything you tried that did not work, and why.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to implement this.

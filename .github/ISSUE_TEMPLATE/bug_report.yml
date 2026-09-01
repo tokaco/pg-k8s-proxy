@@ -1,0 +1,83 @@
+name: Bug report
+description: Something does not work as documented.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The routing table and its status conditions explain
+        most problems, so please include them — `kubectl get postgresroutes -A`
+        and `kubectl describe postgresroute <name>` are usually enough to tell a
+        conflict apart from an unresolvable backend.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: |
+        The manifests and the Helm values you installed with, plus the client
+        command. Redact credentials.
+      placeholder: |
+        1. helm install pg-k8s-proxy ... --set ...
+        2. kubectl apply -f route.yaml
+        3. psql -h ... -d billing
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: routes
+    attributes:
+      label: Routing table
+      description: Output of `kubectl get postgresroutes -A` and, for the route involved, `kubectl describe postgresroute <name> -n <namespace>`.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Gateway logs
+      description: "`kubectl logs -n <namespace> -l app.kubernetes.io/name=pg-k8s-proxy --tail=200`. Running with `--log-level=debug` often shows the deciding line."
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Chart version and image tag, from `helm list -n <namespace>`.
+      placeholder: "chart 0.1.0, image ghcr.io/tokaco/pg-k8s-proxy:0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: kubernetes
+    attributes:
+      label: Kubernetes version and distribution
+      placeholder: "v1.34.0, EKS"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Cluster
+        - Namespaced
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: PostgreSQL client and backend
+      placeholder: "psql 17, CloudNativePG 1.24 running PostgreSQL 16"

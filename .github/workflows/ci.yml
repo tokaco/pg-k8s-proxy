@@ -1,0 +1,334 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  merge_group:
+
+# A new push to a PR makes the in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25"
+  HELM_VERSION: "v3.16.4"
+  # Kubernetes version the e2e job provisions. Bump alongside Chart.yaml's
+  # kubeVersion floor.
+  KIND_NODE_IMAGE: "kindest/node:v1.34.0"
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: src/go.sum
+
+      - name: Verify go.mod is tidy
+        working-directory: src
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum \
+            || { echo "::error::go.mod or go.sum is not tidy; run 'make tidy'"; exit 1; }
+
+      - name: Check formatting
+        working-directory: src
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "${unformatted}" ]; then
+            echo "::error::these files are not gofmt-clean:"
+            echo "${unformatted}"
+            exit 1
+          fi
+
+      - name: Vet
+        working-directory: src
+        run: go vet ./...
+
+      - name: Test
+        working-directory: src
+        run: go test -race -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        working-directory: src
+        run: |
+          go tool cover -func=coverage.out | tail -1
+          {
+            echo '### Go coverage'
+            echo '```'
+            go tool cover -func=coverage.out | tail -20
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: src/coverage.out
+          retention-days: 7
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: src/go.sum
+
+      # Installed through the Makefile so CI and a developer's machine run the
+      # exact same pinned version, with no action-to-linter major coupling.
+      - name: golangci-lint
+        run: make lint
+
+  generated:
+    name: Generated files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: src/go.sum
+
+      # DeepCopy methods and the CRD are committed, so a change to the API types
+      # that skipped 'make generate manifests' has to fail here rather than ship
+      # a chart whose schema no longer matches the code.
+      - name: Verify DeepCopy methods and CRDs are current
+        run: make verify-generated
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Lint
+        run: |
+          helm lint charts/pg-k8s-proxy
+          helm lint charts/pg-k8s-proxy \
+            --set scope.type=Namespaced \
+            --set 'scope.namespaces={apps,databases}'
+
+      - name: Render every supported configuration
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+
+          render() {
+            name="$1"; shift
+            echo "rendering ${name}"
+            helm template pg-k8s-proxy charts/pg-k8s-proxy \
+              --namespace pgproxy "$@" > "rendered/${name}.yaml"
+          }
+
+          render cluster-default
+          render namespaced \
+            --set scope.type=Namespaced \
+            --set 'scope.namespaces={apps,databases}'
+          render tls \
+            --set proxy.tls.mode=require \
+            --set proxy.tls.secretName=gateway-tls \
+            --set proxy.tls.clientCASecretName=client-ca
+          render everything \
+            --set metrics.serviceMonitor.enabled=true \
+            --set networkPolicy.enabled=true \
+            --set networkPolicy.egress.enabled=true \
+            --set autoscaling.enabled=true \
+            --set rbac.readCABundleSecrets=true
+          render minimal \
+            --set crds.install=false \
+            --set serviceDiscovery.enabled=false \
+            --set podDisruptionBudget.enabled=false \
+            --set replicaCount=1
+
+      # Renders that parse as YAML can still be rejected by the API server, so
+      # validate them against the real Kubernetes schemas.
+      - name: Validate against Kubernetes schemas
+        uses: docker://ghcr.io/yannh/kubeconform:v0.6.7
+        with:
+          args: >-
+            -strict
+            -summary
+            -kubernetes-version 1.34.0
+            -schema-location default
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+            -ignore-missing-schemas
+            rendered
+
+      - name: Validate the examples
+        uses: docker://ghcr.io/yannh/kubeconform:v0.6.7
+        with:
+          args: >-
+            -strict
+            -summary
+            -kubernetes-version 1.34.0
+            -ignore-missing-schemas
+            examples
+
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Build for both release architectures but push nothing: this proves the
+      # Dockerfile still cross-compiles before a tag depends on it.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=ci-${{ github.sha }}
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  e2e:
+    name: End to end
+    runs-on: ubuntu-latest
+    needs: [go, chart]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image for the local cluster
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: pg-k8s-proxy:e2e
+          build-args: |
+            VERSION=e2e
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+
+      - uses: helm/kind-action@v1
+        with:
+          node_image: ${{ env.KIND_NODE_IMAGE }}
+          cluster_name: pg-k8s-proxy-e2e
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Load the image into kind
+        run: kind load docker-image pg-k8s-proxy:e2e --name pg-k8s-proxy-e2e
+
+      - name: Install the chart
+        run: |
+          helm install pg-k8s-proxy charts/pg-k8s-proxy \
+            --namespace pgproxy --create-namespace \
+            --set image.repository=pg-k8s-proxy \
+            --set image.tag=e2e \
+            --set image.pullPolicy=Never \
+            --set replicaCount=1 \
+            --set podDisruptionBudget.enabled=false \
+            --wait --timeout 5m
+
+      - name: Deploy the example instances and routes
+        run: |
+          kubectl apply -f examples/00-postgres-instances.yaml
+          kubectl wait --for=condition=Available deployment \
+            --all --namespace default --timeout=5m
+
+      - name: Wait for the routes to be programmed
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            if kubectl get postgresroute postgres-billing-discovered \
+                 -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' \
+                 2>/dev/null | grep -q True; then
+              echo "routes are programmed"
+              kubectl get postgresroutes -A
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::routes were not programmed in time"
+          kubectl get postgresroutes -A -o yaml
+          kubectl logs -n pgproxy -l app.kubernetes.io/name=pg-k8s-proxy --tail=200
+          exit 1
+
+      - name: Route a real psql session through the gateway
+        run: |
+          set -euo pipefail
+          # This is the assertion that matters: a genuine client, naming only the
+          # database, reaches the instance that serves it.
+          kubectl run psql-e2e --rm -i --restart=Never \
+            --image=postgres:17-alpine \
+            --env=PGPASSWORD=not-a-real-password \
+            --command -- \
+            psql -h pg-k8s-proxy.pgproxy.svc.cluster.local -p 5432 \
+                 -U postgres -d billing \
+                 -tAc "select current_database()" | tee /tmp/psql-out
+          grep -qx billing /tmp/psql-out
+
+      - name: An unknown database must be rejected with SQLSTATE 3D000
+        run: |
+          set -euo pipefail
+          # A dropped socket would also "fail", so assert on the diagnostic the
+          # gateway is supposed to send.
+          kubectl run psql-e2e-missing --rm -i --restart=Never \
+            --image=postgres:17-alpine \
+            --env=PGPASSWORD=not-a-real-password \
+            --command -- \
+            psql -h pg-k8s-proxy.pgproxy.svc.cluster.local -p 5432 \
+                 -U postgres -d no-such-database \
+                 -tAc "select 1" 2>&1 | tee /tmp/psql-missing || true
+          grep -q 'does not exist' /tmp/psql-missing
+
+      - name: Explicit routes must override discovered ones
+        run: |
+          set -euo pipefail
+          kubectl apply -f examples/10-routes.yaml
+          for _ in $(seq 1 30); do
+            if kubectl get postgresroute orders \
+                 -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' \
+                 2>/dev/null | grep -q True; then
+              break
+            fi
+            sleep 5
+          done
+          # billing-override has priority 10, so the discovered route must lose.
+          kubectl get postgresroute postgres-billing-discovered \
+            -o jsonpath='{.status.conditions[?(@.type=="Accepted")].reason}' \
+            | grep -q DatabaseNameConflict
+          kubectl get postgresroutes -A
+
+      - name: Helm test
+        run: helm test pg-k8s-proxy --namespace pgproxy --timeout 3m
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get all -A
+          kubectl get postgresroutes -A -o yaml
+          kubectl describe pods -n pgproxy
+          kubectl logs -n pgproxy -l app.kubernetes.io/name=pg-k8s-proxy --tail=500 || true
