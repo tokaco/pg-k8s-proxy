@@ -73,9 +73,16 @@ make routes
 ### Tests
 
 ```bash
-make test          # go test -race
-make cover         # coverage report in a browser
+make test              # go test -race
+make test-integration  # against a throwaway PostgreSQL in Docker
+make cover             # coverage report in a browser
 ```
+
+The integration tests sit behind a build tag and run the gateway in front of a
+real PostgreSQL with a real `psql` client. They cover what a fake backend
+cannot: the SCRAM exchange relayed untouched, ParameterStatus, the substituted
+BackendKeyData, and a query round trip. Anything touching the data plane's
+handling of the authentication phase belongs there.
 
 New behaviour needs a test. The existing suites are worth reading first, because
 they set the expectations:

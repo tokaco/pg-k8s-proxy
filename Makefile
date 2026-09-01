@@ -98,6 +98,20 @@ lint: $(GOLANGCI_LINT) ## Run golangci-lint
 test: ## Run the unit tests
 	cd $(SRC) && go test -race -count=1 ./...
 
+.PHONY: test-integration
+test-integration: ## Run the integration tests against a throwaway PostgreSQL
+	@docker rm -f pg-k8s-proxy-it >/dev/null 2>&1 || true
+	docker run -d --name pg-k8s-proxy-it -p 55432:5432 \
+		-e POSTGRES_DB=billing -e POSTGRES_USER=postgres \
+		-e POSTGRES_PASSWORD=not-a-real-password postgres:17-alpine
+	@echo "waiting for PostgreSQL..."
+	@until docker exec pg-k8s-proxy-it pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
+	cd $(SRC) && PGPROXY_TEST_BACKEND=127.0.0.1:55432 \
+		PGPROXY_TEST_PASSWORD=not-a-real-password \
+		go test -tags=integration -count=1 -v -timeout=5m ./internal/proxy/ \
+		|| { docker rm -f pg-k8s-proxy-it >/dev/null; exit 1; }
+	@docker rm -f pg-k8s-proxy-it >/dev/null
+
 .PHONY: cover
 cover: ## Run the tests and open the coverage report
 	cd $(SRC) && go test -race -count=1 -coverprofile=coverage.out ./... && go tool cover -html=coverage.out

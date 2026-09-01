@@ -87,10 +87,16 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: src/go.sum
 
-      # Installed through the Makefile so CI and a developer's machine run the
-      # exact same pinned version, with no action-to-linter major coupling.
-      - name: golangci-lint
-        run: make lint
+      # The official action fetches a prebuilt binary. Going through
+      # "make lint" instead built golangci-lint from source on every run, which
+      # pulled its whole module graph and made the job slow and prone to
+      # transient checksum-database failures. The linter version is pinned here
+      # to the same one the Makefile installs for local runs, and both read
+      # src/.golangci.yml, so the results match.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.5.0
+          working-directory: src
 
   generated:
     name: Generated files
@@ -206,6 +212,49 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    # Proves the data plane against a real PostgreSQL: the SCRAM exchange
+    # relayed untouched, ParameterStatus, the substituted BackendKeyData, and a
+    # query round trip. The unit tests use a fake backend that skips
+    # authentication, so only this job covers those. It needs no cluster, which
+    # keeps a data-plane regression distinguishable from a Kubernetes one.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: billing
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: not-a-real-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: src/go.sum
+
+      - name: Install the psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends postgresql-client
+          psql --version
+
+      - name: Test
+        working-directory: src
+        env:
+          PGPROXY_TEST_BACKEND: 127.0.0.1:5432
+          PGPROXY_TEST_PASSWORD: not-a-real-password
+        run: go test -tags=integration -count=1 -v -timeout=5m ./internal/proxy/
+
   e2e:
     name: End to end
     runs-on: ubuntu-latest
@@ -278,17 +327,33 @@ jobs:
 
       - name: Route a real psql session through the gateway
         run: |
-          set -euo pipefail
+          set -uo pipefail
           # This is the assertion that matters: a genuine client, naming only the
           # database, reaches the instance that serves it.
+          #
+          # The retry lives inside the pod rather than around kubectl so that a
+          # transient failure costs one connection instead of a whole pod
+          # scheduling cycle, and so every attempt's real error reaches the log
+          # instead of being hidden behind a non-zero exit code.
           kubectl run psql-e2e --rm -i --restart=Never \
             --image=postgres:17-alpine \
             --env=PGPASSWORD=not-a-real-password \
-            --command -- \
-            psql -h pg-k8s-proxy.pgproxy.svc.cluster.local -p 5432 \
-                 -U postgres -d billing \
-                 -tAc "select current_database()" | tee /tmp/psql-out
-          grep -qx billing /tmp/psql-out
+            --command -- sh -c '
+              for attempt in $(seq 1 30); do
+                if out=$(psql -h pg-k8s-proxy.pgproxy.svc.cluster.local -p 5432 \
+                              -U postgres -d billing --no-psqlrc \
+                              -tAc "select current_database()" 2>&1); then
+                  echo "$out"
+                  exit 0
+                fi
+                echo "attempt $attempt failed: $out" >&2
+                sleep 3
+              done
+              exit 1
+            ' | tee /tmp/psql-out
+          echo "--- captured output ---"
+          cat /tmp/psql-out
+          grep -q "^billing$" /tmp/psql-out
 
       - name: An unknown database must be rejected with SQLSTATE 3D000
         run: |
@@ -300,8 +365,10 @@ jobs:
             --env=PGPASSWORD=not-a-real-password \
             --command -- \
             psql -h pg-k8s-proxy.pgproxy.svc.cluster.local -p 5432 \
-                 -U postgres -d no-such-database \
+                 -U postgres -d no-such-database --no-psqlrc \
                  -tAc "select 1" 2>&1 | tee /tmp/psql-missing || true
+          echo "--- captured output ---"
+          cat /tmp/psql-missing
           grep -q 'does not exist' /tmp/psql-missing
 
       - name: Explicit routes must override discovered ones
