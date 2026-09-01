@@ -141,6 +141,22 @@ jobs:
         with:
           version: ${{ env.HELM_VERSION }}
 
+      # release-please keeps these in step, and the release workflow refuses to
+      # publish when they disagree. Checking here too means a drift is visible
+      # on master rather than only at the moment of a release, which is how an
+      # appVersion left a minor behind once already.
+      - name: The chart version must match version.txt
+        run: |
+          set -euo pipefail
+          chart=$(grep -E '^version:' charts/pg-k8s-proxy/Chart.yaml | awk '{print $2}')
+          app=$(grep -E '^appVersion:' charts/pg-k8s-proxy/Chart.yaml | awk '{print $2}' | tr -d '"')
+          declared=$(cat version.txt)
+          echo "Chart version=${chart}  appVersion=${app}  version.txt=${declared}"
+          if [ "${chart}" != "${declared}" ] || [ "${app}" != "${declared}" ]; then
+            echo "::error::version drift: Chart version=${chart}, appVersion=${app}, version.txt=${declared}"
+            exit 1
+          fi
+
       - name: Lint
         run: |
           helm lint charts/pg-k8s-proxy

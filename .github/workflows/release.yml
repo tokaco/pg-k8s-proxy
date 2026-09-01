@@ -1,6 +1,20 @@
 name: Release
 
 on:
+  # Called directly by release-please.yml. Publishing cannot rely on the
+  # "release: published" event: release-please creates the release with the
+  # built-in GITHUB_TOKEN, and events raised by that token never start a new
+  # workflow run, so the release appeared with nothing built for it. Being
+  # invoked as a reusable workflow keeps it inside the same run, where no such
+  # restriction applies.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to publish, e.g. v0.1.0"
+        required: true
+        type: string
+  # Kept for a release published by a person, or by an installation that
+  # supplies its own token.
   release:
     types: [published]
   workflow_dispatch:

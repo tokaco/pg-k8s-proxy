@@ -10,7 +10,10 @@
       "include-v-in-tag": true,
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
-        "charts/pg-k8s-proxy/Chart.yaml"
+        {
+          "type": "generic",
+          "path": "charts/pg-k8s-proxy/Chart.yaml"
+        }
       ]
     }
   },

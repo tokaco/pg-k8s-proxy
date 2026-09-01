@@ -43,8 +43,8 @@ an image which does not exist.
    merge that PR
         │
         ▼
- release-please.yml ──▶ tags vX.Y.Z and publishes a GitHub Release
-        │
+ release-please.yml ──▶ tags vX.Y.Z, publishes a GitHub Release, and then
+        │                calls release.yml directly in the same run
         ▼
     release.yml
         ├─ resolve  derive the version from the tag
@@ -52,6 +52,12 @@ an image which does not exist.
         ├─ image    build, push, and sign the multi-arch image
         └─ chart    package, push to the OCI registry, attach to the release
 ```
+
+release-please calls the publish workflow rather than leaving it to the
+`release: published` event. Events raised by the built-in `GITHUB_TOKEN` never
+start a new workflow run, so relying on that event produced a release with
+nothing built for it. A reusable-workflow call stays inside the same run, where
+the restriction does not apply, and it works with no token to configure.
 
 The `verify` job re-runs the suite against exactly the tagged tree rather than
 trusting the CI run of the commit the tag was cut from. A tag is permanent, so it
