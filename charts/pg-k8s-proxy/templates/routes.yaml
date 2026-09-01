@@ -1,0 +1,16 @@
+{{- range .Values.routes }}
+---
+apiVersion: pgproxy.io/v1alpha1
+kind: PostgresRoute
+metadata:
+  name: {{ .name }}
+  namespace: {{ default $.Release.Namespace .namespace }}
+  labels:
+    {{- include "pg-k8s-proxy.labels" $ | nindent 4 }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- toYaml .spec | nindent 2 }}
+{{- end }}

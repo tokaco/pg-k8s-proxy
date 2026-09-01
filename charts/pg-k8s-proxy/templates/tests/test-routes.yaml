@@ -1,0 +1,49 @@
+{{- /*
+A `helm test` that proves the gateway answers and reports its routing table.
+It speaks HTTP to the probe port rather than PostgreSQL, so it needs no
+database credentials and no backend to exist.
+*/}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "pg-k8s-proxy.fullname" . }}-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pg-k8s-proxy.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: curlimages/curl:8.11.1
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      command:
+        - sh
+        - -ec
+        - |
+          endpoint="http://{{ include "pg-k8s-proxy.fullname" . }}-metrics.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}:{{ .Values.health.port }}"
+          echo "checking readiness at ${endpoint}/readyz"
+          curl --fail --silent --show-error --max-time 10 "${endpoint}/readyz"
+          echo
+          echo "checking liveness at ${endpoint}/healthz"
+          curl --fail --silent --show-error --max-time 10 "${endpoint}/healthz"
+          echo
+          echo "gateway is serving"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi

@@ -1,0 +1,91 @@
+{{ include "pg-k8s-proxy.fullname" . }} is installed.
+
+  Chart      {{ .Chart.Name }}-{{ .Chart.Version }}
+  Image      {{ include "pg-k8s-proxy.image" . }}
+  Namespace  {{ .Release.Namespace }}
+  Replicas   {{ if .Values.autoscaling.enabled }}{{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} (autoscaled){{ else }}{{ .Values.replicaCount }}{{ end }}
+
+SCOPE
+{{- if eq .Values.scope.type "Cluster" }}
+  Cluster-wide. A ClusterRole and ClusterRoleBinding let the operator route
+  PostgreSQL instances in every namespace.
+{{- else }}
+  Namespaced. The operator is confined to:
+{{- range (include "pg-k8s-proxy.watchedNamespaces" . | fromYamlArray) }}
+    - {{ . }}
+{{- end }}
+  Routes and Services outside those namespaces are invisible to it. Add more
+  under scope.namespaces; each one gets its own Role and RoleBinding.
+{{- end }}
+
+ROUTING
+{{- if .Values.serviceDiscovery.enabled }}
+  Service discovery is on. Any Service matching
+    {{ .Values.serviceDiscovery.labelSelector }}
+  gets a PostgresRoute generated for it, named after the Service. Publish a
+  different database name with the annotation
+    {{ .Values.serviceDiscovery.databaseAnnotation }}: my-database
+{{- else }}
+  Service discovery is off. Only PostgresRoute objects you create are routed.
+{{- end }}
+
+  Declare a route explicitly:
+
+    apiVersion: pgproxy.io/v1alpha1
+    kind: PostgresRoute
+    metadata:
+      name: billing
+      namespace: {{ .Release.Namespace }}
+    spec:
+      database: billing
+      backend:
+        type: Service
+        service:
+          name: billing-postgres
+          port: "5432"
+
+  A hand-written route always wins a name conflict against a discovered one.
+
+CHECK IT
+  kubectl get postgresroutes -A
+  kubectl describe postgresroute <name> -n <namespace>
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+CONNECT
+{{- if eq .Values.service.type "ClusterIP" }}
+  From inside the cluster:
+
+    psql -h {{ include "pg-k8s-proxy.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }} \
+         -p {{ .Values.service.port }} -U <user> -d <database>
+
+  From your workstation:
+
+    kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "pg-k8s-proxy.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+    psql -h 127.0.0.1 -p {{ .Values.service.port }} -U <user> -d <database>
+{{- else if eq .Values.service.type "LoadBalancer" }}
+  Wait for the load balancer address, then connect to it on port {{ .Values.service.port }}:
+
+    kubectl get svc -n {{ .Release.Namespace }} {{ include "pg-k8s-proxy.fullname" . }} -w
+{{- else }}
+  Reachable on port {{ .Values.service.nodePort | default "<assigned>" }} of every node.
+{{- end }}
+
+  The database name in the connection string is what selects the backend.
+  Credentials are never handled here; the backend authenticates as it always did.
+
+{{- if eq .Values.proxy.tls.mode "disable" }}
+
+WARNING
+  Client-facing TLS is disabled, so traffic between clients and the gateway is
+  in plaintext. TLS cannot be passed through to the backend, because the gateway
+  must read the startup message to learn which database is wanted. Set
+  proxy.tls.mode=require with proxy.tls.secretName to terminate TLS here.
+{{- end }}
+{{- if and (gt (int .Values.replicaCount) 1) (ne .Values.service.sessionAffinity "ClientIP") }}
+
+WARNING
+  service.sessionAffinity is {{ .Values.service.sessionAffinity }} with {{ .Values.replicaCount }} replicas. Query
+  cancellation (Ctrl-C in psql) only works when the cancel connection reaches
+  the replica holding the session, so leave it at ClientIP unless you have a
+  reason not to.
+{{- end }}

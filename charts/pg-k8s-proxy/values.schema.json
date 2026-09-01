@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "pg-k8s-proxy values",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "clusterDomain": { "type": "string", "minLength": 1 },
+    "replicaCount": { "type": "integer", "minimum": 0 },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "digest": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": { "type": "array", "items": { "type": "object" } },
+
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["Cluster", "Namespaced"],
+          "description": "Cluster grants a ClusterRole so the operator provisions routing across every namespace; Namespaced grants a Role per watched namespace."
+        },
+        "namespaces": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "type": "object" },
+        "automountServiceAccountToken": { "type": "boolean" }
+      }
+    },
+
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "readCABundleSecrets": { "type": "boolean" }
+      }
+    },
+
+    "crds": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "install": { "type": "boolean" },
+        "keep": { "type": "boolean" }
+      }
+    },
+
+    "proxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "maxConnections": { "type": "integer", "minimum": 0 },
+        "startupTimeout": { "type": "string", "pattern": "^[0-9]+(ns|us|ms|s|m|h)$" },
+        "dialTimeout": { "type": "string", "pattern": "^[0-9]+(ns|us|ms|s|m|h)$" },
+        "shutdownGracePeriod": { "type": "string", "pattern": "^[0-9]+(ns|us|ms|s|m|h)$" },
+        "keepAlivePeriod": { "type": "string", "pattern": "^[0-9]+(ns|us|ms|s|m|h)$" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "type": "string", "enum": ["disable", "allow", "require"] },
+            "secretName": { "type": "string" },
+            "clientCASecretName": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "serviceDiscovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "labelSelector": { "type": "string" },
+        "databaseAnnotation": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "leaderElection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
+        "format": { "type": "string", "enum": ["json", "text"] }
+      }
+    },
+
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "nodePort": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 },
+        "clusterIP": { "type": "string" },
+        "loadBalancerClass": { "type": "string" },
+        "loadBalancerSourceRanges": { "type": "array", "items": { "type": "string" } },
+        "externalTrafficPolicy": { "type": "string", "enum": ["", "Cluster", "Local"] },
+        "annotations": { "type": "object" },
+        "labels": { "type": "object" },
+        "publishNotReadyAddresses": { "type": "boolean" },
+        "sessionAffinity": { "type": "string", "enum": ["ClientIP", "None"] },
+        "sessionAffinityTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
+      }
+    },
+
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "namespace": { "type": "string" },
+            "interval": { "type": "string" },
+            "scrapeTimeout": { "type": "string" },
+            "labels": { "type": "object" },
+            "annotations": { "type": "object" },
+            "relabelings": { "type": "array" },
+            "metricRelabelings": { "type": "array" }
+          }
+        }
+      }
+    },
+
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "port": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+    },
+
+    "resources": { "type": "object" },
+
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": { "type": ["integer", "null"], "minimum": 1 },
+        "targetMemoryUtilizationPercentage": { "type": ["integer", "null"], "minimum": 1 },
+        "behavior": { "type": "object" }
+      }
+    },
+
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": { "type": ["integer", "string", "null"] },
+        "maxUnavailable": { "type": ["integer", "string", "null"] }
+      }
+    },
+
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "allowedClients": { "type": "array", "items": { "type": "object" } },
+        "allowedScrapers": { "type": "array", "items": { "type": "object" } },
+        "egress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "extraRules": { "type": "array" }
+          }
+        }
+      }
+    },
+
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "topologySpreadConstraints": { "type": "array", "items": { "type": "object" } },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "priorityClassName": { "type": "string" },
+    "dnsPolicy": { "type": "string" },
+    "dnsConfig": { "type": "object" },
+    "hostAliases": { "type": "array" },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "commonLabels": { "type": "object" },
+    "commonAnnotations": { "type": "object" },
+    "extraArgs": { "type": "array", "items": { "type": "string" } },
+    "extraEnv": { "type": "array", "items": { "type": "object" } },
+    "extraEnvFrom": { "type": "array", "items": { "type": "object" } },
+    "extraVolumes": { "type": "array", "items": { "type": "object" } },
+    "extraVolumeMounts": { "type": "array", "items": { "type": "object" } },
+    "extraContainers": { "type": "array", "items": { "type": "object" } },
+    "initContainers": { "type": "array", "items": { "type": "object" } },
+
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "spec"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "namespace": { "type": "string" },
+          "annotations": { "type": "object" },
+          "spec": { "type": "object" }
+        }
+      }
+    }
+  }
+}

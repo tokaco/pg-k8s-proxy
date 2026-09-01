@@ -1,0 +1,87 @@
+# Explicit routes. Everything here works whether or not service discovery is on,
+# and a hand-written route always wins a name conflict against a discovered one.
+
+---
+# The simplest form: route the database "reporting" to a Service in this namespace.
+apiVersion: pgproxy.io/v1alpha1
+kind: PostgresRoute
+metadata:
+  name: reporting
+  namespace: default
+spec:
+  backend:
+    type: Service
+    service:
+      name: postgres-analytics
+      port: "5432"
+
+---
+# Publish a database under a name that differs from the one on the instance.
+# Clients connect to "orders"; the backend sees "analytics".
+apiVersion: pgproxy.io/v1alpha1
+kind: PostgresRoute
+metadata:
+  name: orders
+  namespace: default
+spec:
+  database: orders
+  targetDatabase: analytics
+  backend:
+    type: Service
+    service:
+      name: postgres-analytics
+      port: "5432"
+
+---
+# Route to a Service in another namespace, addressing the port by name.
+apiVersion: pgproxy.io/v1alpha1
+kind: PostgresRoute
+metadata:
+  name: warehouse
+  namespace: default
+spec:
+  backend:
+    type: Service
+    service:
+      name: postgres-billing
+      namespace: default
+      port: postgresql
+
+---
+# Route to a PostgreSQL instance outside the cluster, over verified TLS.
+# The CA bundle Secret must carry the label pgproxy.io/ca-bundle=true, and the
+# chart must be installed with rbac.readCABundleSecrets=true.
+apiVersion: pgproxy.io/v1alpha1
+kind: PostgresRoute
+metadata:
+  name: legacy
+  namespace: default
+spec:
+  database: legacy
+  backend:
+    type: Address
+    address:
+      host: postgres.legacy.example.com
+      port: 5432
+  tls:
+    mode: VerifyFull
+    caSecretRef:
+      name: legacy-postgres-ca
+      key: ca.crt
+
+---
+# Take over a name that service discovery also claims. The higher priority wins,
+# since discovered routes are generated with priority -100.
+apiVersion: pgproxy.io/v1alpha1
+kind: PostgresRoute
+metadata:
+  name: billing-override
+  namespace: default
+spec:
+  database: billing
+  priority: 10
+  backend:
+    type: Service
+    service:
+      name: postgres-analytics
+      port: "5432"

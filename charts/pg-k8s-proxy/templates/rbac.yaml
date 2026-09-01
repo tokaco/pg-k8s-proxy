@@ -1,0 +1,120 @@
+{{- if .Values.rbac.create }}
+{{- $fullName := include "pg-k8s-proxy.fullname" . }}
+{{- $clusterName := include "pg-k8s-proxy.clusterScopedName" . }}
+{{- $serviceAccount := include "pg-k8s-proxy.serviceAccountName" . }}
+{{- $clusterScoped := eq .Values.scope.type "Cluster" }}
+
+{{- if $clusterScoped }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $clusterName }}
+  labels:
+    {{- include "pg-k8s-proxy.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+rules:
+  {{- include "pg-k8s-proxy.rules" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $clusterName }}
+  labels:
+    {{- include "pg-k8s-proxy.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $clusterName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+{{/*
+Namespaced scope grants the same rules once per watched namespace. The
+namespaces must already exist, and the operator only sees PostgreSQL instances
+inside them.
+*/}}
+{{- range $namespace := (include "pg-k8s-proxy.watchedNamespaces" $ | fromYamlArray) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullName }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "pg-k8s-proxy.labels" $ | nindent 4 }}
+rules:
+  {{- include "pg-k8s-proxy.rules" $ | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullName }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "pg-k8s-proxy.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.leaderElection.enabled }}
+---
+{{/*
+Leader election is always namespaced to the release, whatever the watch scope.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullName }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pg-k8s-proxy.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullName }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pg-k8s-proxy.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullName }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ $serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

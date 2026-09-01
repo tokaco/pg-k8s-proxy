@@ -1,0 +1,230 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pg-k8s-proxy.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pg-k8s-proxy.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "pg-k8s-proxy.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Bring the replacement up before retiring a replica: an old pod keeps
+      # serving its established sessions until its grace period expires.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "pg-k8s-proxy.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Restart the pods when the TLS material changes, since the gateway
+        # reads its keypair once at startup.
+        {{- if ne .Values.proxy.tls.mode "disable" }}
+        checksum/tls-config: {{ printf "%s|%s|%s" .Values.proxy.tls.mode .Values.proxy.tls.secretName .Values.proxy.tls.clientCASecretName | sha256sum }}
+        {{- end }}
+        {{- with (mergeOverwrite (deepCopy .Values.commonAnnotations) .Values.podAnnotations) }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "pg-k8s-proxy.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Long enough for proxy.shutdownGracePeriod to elapse before SIGKILL.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.dnsPolicy }}
+      dnsPolicy: {{ . }}
+      {{- end }}
+      {{- with .Values.dnsConfig }}
+      dnsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: pg-k8s-proxy
+          image: {{ include "pg-k8s-proxy.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --proxy-bind-address=:{{ .Values.proxy.port }}
+            - --health-bind-address=:{{ .Values.health.port }}
+            - --metrics-bind-address=:{{ .Values.metrics.port }}
+            - --proxy-max-connections={{ .Values.proxy.maxConnections }}
+            - --proxy-startup-timeout={{ .Values.proxy.startupTimeout }}
+            - --proxy-dial-timeout={{ .Values.proxy.dialTimeout }}
+            - --proxy-shutdown-grace-period={{ .Values.proxy.shutdownGracePeriod }}
+            - --proxy-keepalive-period={{ .Values.proxy.keepAlivePeriod }}
+            - --cluster-domain={{ .Values.clusterDomain }}
+            - --leader-elect={{ .Values.leaderElection.enabled }}
+            - --log-level={{ .Values.logging.level }}
+            - --log-format={{ .Values.logging.format }}
+            {{- if eq .Values.scope.type "Namespaced" }}
+            - --watch-namespaces={{ include "pg-k8s-proxy.watchedNamespaces" . | fromYamlArray | join "," }}
+            {{- end }}
+            - --service-discovery={{ .Values.serviceDiscovery.enabled }}
+            {{- if .Values.serviceDiscovery.enabled }}
+            - --service-discovery-selector={{ .Values.serviceDiscovery.labelSelector }}
+            - --service-discovery-database-annotation={{ .Values.serviceDiscovery.databaseAnnotation }}
+            {{- end }}
+            {{- if .Values.rbac.readCABundleSecrets }}
+            - --watch-secrets=true
+            {{- end }}
+            {{- if ne .Values.proxy.tls.mode "disable" }}
+            - --proxy-tls-mode={{ .Values.proxy.tls.mode }}
+            - --proxy-tls-cert-file={{ include "pg-k8s-proxy.tlsMountPath" . }}/tls.crt
+            - --proxy-tls-key-file={{ include "pg-k8s-proxy.tlsMountPath" . }}/tls.key
+            {{- if .Values.proxy.tls.clientCASecretName }}
+            - --proxy-tls-client-ca-file={{ include "pg-k8s-proxy.clientCAMountPath" . }}/ca.crt
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- if (dig "limits" "memory" nil .Values.resources) }}
+            # Give the garbage collector the container's memory limit as its
+            # soft target, so it collects harder instead of being OOM-killed.
+            # GOMAXPROCS needs no help: since Go 1.25 the runtime reads the
+            # cgroup CPU limit by itself.
+            - name: GOMEMLIMIT
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.memory
+                  divisor: "1"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: postgresql
+              containerPort: {{ .Values.proxy.port }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.health.port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 2
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            {{- if ne .Values.proxy.tls.mode "disable" }}
+            - name: proxy-tls
+              mountPath: {{ include "pg-k8s-proxy.tlsMountPath" . }}
+              readOnly: true
+            {{- if .Values.proxy.tls.clientCASecretName }}
+            - name: proxy-client-ca
+              mountPath: {{ include "pg-k8s-proxy.clientCAMountPath" . }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        {{- if ne .Values.proxy.tls.mode "disable" }}
+        - name: proxy-tls
+          secret:
+            secretName: {{ .Values.proxy.tls.secretName }}
+            defaultMode: 0400
+        {{- if .Values.proxy.tls.clientCASecretName }}
+        - name: proxy-client-ca
+          secret:
+            secretName: {{ .Values.proxy.tls.clientCASecretName }}
+            defaultMode: 0400
+        {{- end }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range .Values.topologySpreadConstraints }}
+        {{- $constraint := deepCopy . }}
+        {{- /* Default the selector to this release's pods, so the chart's
+               spread rule works without the user restating the labels. */}}
+        {{- if not (dig "labelSelector" "matchLabels" nil $constraint) }}
+        {{- $_ := set $constraint "labelSelector" (dict "matchLabels" (include "pg-k8s-proxy.selectorLabels" $ | fromYaml)) }}
+        {{- end }}
+        - {{ toYaml $constraint | indent 10 | trim }}
+        {{- end }}
+      {{- end }}

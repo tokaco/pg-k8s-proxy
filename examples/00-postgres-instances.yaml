@@ -1,0 +1,182 @@
+# Two throwaway PostgreSQL instances to route to. They use emptyDir storage and
+# hard-coded passwords, so they are for trying the gateway out, nothing more.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-billing
+  namespace: default
+type: Opaque
+stringData:
+  POSTGRES_DB: billing
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: not-a-real-password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-billing
+  namespace: default
+  labels:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: billing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: billing
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgresql
+        app.kubernetes.io/instance: billing
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          envFrom:
+            - secretRef:
+                name: postgres-billing
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-billing
+  namespace: default
+  labels:
+    # This label is what service discovery matches on, so the gateway picks
+    # this instance up without any PostgresRoute being written by hand.
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: billing
+  annotations:
+    # Publish it under a different name than the Service carries.
+    pgproxy.io/database-name: billing
+spec:
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: billing
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-analytics
+  namespace: default
+type: Opaque
+stringData:
+  POSTGRES_DB: analytics
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: not-a-real-password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-analytics
+  namespace: default
+  labels:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/instance: analytics
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgresql
+        app.kubernetes.io/instance: analytics
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          envFrom:
+            - secretRef:
+                name: postgres-analytics
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-analytics
+  namespace: default
+  labels:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: analytics
+spec:
+  selector:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/instance: analytics
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql

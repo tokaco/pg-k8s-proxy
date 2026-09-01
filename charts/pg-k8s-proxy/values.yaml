@@ -1,0 +1,270 @@
+# Default values for pg-k8s-proxy.
+# Every key is documented in values.schema.json, which also enforces the types.
+
+# -- Overrides the chart name used in resource names.
+nameOverride: ""
+# -- Overrides the fully qualified name of the release's resources.
+fullnameOverride: ""
+
+image:
+  # -- Container image repository.
+  repository: ghcr.io/tokaco/pg-k8s-proxy
+  # -- Image tag. Defaults to the chart's appVersion.
+  tag: ""
+  # -- Image digest. Takes precedence over tag when set.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# -- References to secrets holding registry credentials.
+imagePullSecrets: []
+
+# scope decides how much of the cluster the operator provisions PostgreSQL
+# routing for, and therefore which RBAC the chart creates.
+scope:
+  # -- Cluster grants a ClusterRole and ClusterRoleBinding, so the operator
+  # discovers and routes PostgreSQL instances in every namespace.
+  # Namespaced grants a Role and RoleBinding in the release namespace, and in
+  # each namespace listed under `scope.namespaces`, so the operator stays
+  # confined to them.
+  type: Cluster
+  # -- Additional namespaces to watch when type is Namespaced. The release
+  # namespace is always included. Ignored when type is Cluster.
+  namespaces: []
+
+serviceAccount:
+  # -- Create a ServiceAccount for the operator.
+  create: true
+  # -- Name of the ServiceAccount. Generated from the release name when empty.
+  name: ""
+  annotations: {}
+  # -- Mount a projected API token into the pod. Required unless a sidecar
+  # supplies credentials some other way.
+  automountServiceAccountToken: true
+
+rbac:
+  # -- Create the Role or ClusterRole and its binding, according to scope.type.
+  create: true
+  # -- Grant read access to Secrets labelled `pgproxy.io/ca-bundle=true`, which
+  # routes use to verify a backend's TLS certificate. Only these Secrets are
+  # cached, so leaving it on does not pull the cluster's secrets into memory.
+  readCABundleSecrets: false
+
+crds:
+  # -- Install the PostgresRoute CustomResourceDefinition. Templated rather than
+  # placed in crds/, so that `helm upgrade` applies CRD changes.
+  install: true
+  # -- Keep the CRD, and therefore the PostgresRoute objects, when the release
+  # is uninstalled.
+  keep: true
+
+# -- Number of gateway replicas. Every replica serves traffic; only the elected
+# leader writes status, so scaling out adds throughput, not write contention.
+replicaCount: 2
+
+proxy:
+  # -- Port the gateway accepts PostgreSQL clients on.
+  port: 5432
+  # -- Maximum concurrent client sessions per replica. 0 means unlimited.
+  maxConnections: 0
+  # -- How long a client has to finish the PostgreSQL handshake.
+  startupTimeout: 30s
+  # -- How long to wait when connecting to a backend.
+  dialTimeout: 5s
+  # -- How long established sessions may continue after shutdown begins. Keep
+  # this below terminationGracePeriodSeconds.
+  shutdownGracePeriod: 30s
+  # -- TCP keepalive interval on client and backend connections.
+  keepAlivePeriod: 30s
+
+  tls:
+    # -- Client-facing TLS: disable, allow, or require.
+    # TLS cannot be passed through to the backend, because the gateway has to
+    # read the startup message to learn which database the client wants. It is
+    # terminated here and, if a route asks for it, re-originated to the backend.
+    mode: disable
+    # -- Secret holding tls.crt and tls.key. Required unless mode is disable.
+    secretName: ""
+    # -- Secret holding ca.crt, used to require and verify client certificates.
+    clientCASecretName: ""
+
+serviceDiscovery:
+  # -- Adopt Services carrying the label selector below by generating a
+  # PostgresRoute for each one. Hand-written routes always take precedence.
+  enabled: true
+  # -- Label selector picking the Services to adopt.
+  labelSelector: app.kubernetes.io/name=postgresql
+  # -- Service annotation carrying the database name. Defaults to the Service name.
+  databaseAnnotation: pgproxy.io/database-name
+
+# -- Cluster DNS suffix, used to build Service addresses.
+clusterDomain: cluster.local
+
+leaderElection:
+  # -- Elect a leader so only one replica writes PostgresRoute status.
+  enabled: true
+
+logging:
+  # -- debug, info, warn, or error.
+  level: info
+  # -- json or text.
+  format: json
+
+service:
+  # -- ClusterIP, NodePort, or LoadBalancer. Use LoadBalancer to expose the
+  # gateway outside the cluster.
+  type: ClusterIP
+  # -- Port the Service publishes.
+  port: 5432
+  # -- NodePort to request when type is NodePort.
+  nodePort: null
+  # -- Static cluster IP.
+  clusterIP: ""
+  loadBalancerClass: ""
+  loadBalancerSourceRanges: []
+  # -- Cluster keeps the client source IP; Local also avoids an extra hop.
+  externalTrafficPolicy: ""
+  annotations: {}
+  labels: {}
+  # -- Publish the gateway's DNS record before the pod is ready. Leave false.
+  publishNotReadyAddresses: false
+  # -- Keep a client pinned to one replica for the lifetime of its session's
+  # cancellation key. ClientIP makes query cancellation work without the client
+  # having to land back on the replica that issued the key.
+  sessionAffinity: ClientIP
+  sessionAffinityTimeoutSeconds: 10800
+
+metrics:
+  # -- Port serving Prometheus metrics. This is the only endpoint that serves
+  # them: exposing the same registry on the probe port too would let a scrape
+  # configuration pick up both and silently double every series.
+  port: 9090
+  serviceMonitor:
+    # -- Create a Prometheus Operator ServiceMonitor.
+    enabled: false
+    # -- Namespace for the ServiceMonitor. Defaults to the release namespace.
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+    annotations: {}
+    relabelings: []
+    metricRelabelings: []
+
+health:
+  # -- Port serving the liveness and readiness probes.
+  port: 8080
+
+# -- Resource requests and limits. No CPU limit by default: throttling a proxy
+# adds latency to every query rather than shedding load.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+podDisruptionBudget:
+  # -- Create a PodDisruptionBudget. Requires replicaCount greater than 1.
+  enabled: true
+  minAvailable: 1
+  maxUnavailable: null
+
+networkPolicy:
+  # -- Create a NetworkPolicy for the gateway pods.
+  enabled: false
+  # -- Selectors for the clients allowed to reach the gateway on the PostgreSQL
+  # port. An empty list allows every pod in the cluster.
+  allowedClients: []
+  # -- Selectors for the scrapers allowed to reach the metrics port. An empty
+  # list allows every pod. Worth setting: the metrics carry a database label, so
+  # this endpoint enumerates every routed database name.
+  # The probe port is deliberately not restricted this way — the kubelet
+  # connects from the node, which no pod selector can match.
+  allowedScrapers: []
+  # -- Also emit egress rules. Leave false unless the cluster defaults to
+  # denying egress, since the gateway must reach the API server and every backend.
+  egress:
+    enabled: false
+    extraRules: []
+
+# -- Pod-level security context. Defaults satisfy the restricted Pod Security Standard.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop:
+      - ALL
+
+# -- How long the kubelet waits for the pod to exit. Must exceed
+# proxy.shutdownGracePeriod so in-flight sessions can drain.
+terminationGracePeriodSeconds: 60
+
+# -- Spread replicas across nodes so a single node failure cannot take the
+# gateway down. Set to [] to opt out.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+dnsPolicy: ""
+dnsConfig: {}
+hostAliases: []
+
+podAnnotations: {}
+podLabels: {}
+commonLabels: {}
+commonAnnotations: {}
+
+# -- Extra arguments appended to the container command. Useful for flags the
+# chart does not expose.
+extraArgs: []
+# -- Extra environment variables.
+extraEnv: []
+# -- Extra environment sources.
+extraEnvFrom: []
+# -- Extra volumes on the pod.
+extraVolumes: []
+# -- Extra volume mounts on the gateway container.
+extraVolumeMounts: []
+# -- Extra containers in the pod.
+extraContainers: []
+# -- Init containers.
+initContainers: []
+
+# -- PostgresRoute objects to create alongside the release, so a chart install
+# can bring its routing table with it. Each entry is a PostgresRoute spec plus
+# a name.
+routes: []
+#  - name: billing
+#    spec:
+#      database: billing
+#      backend:
+#        type: Service
+#        service:
+#          name: cnpg-billing-rw
+#          namespace: databases
+#          port: "5432"
