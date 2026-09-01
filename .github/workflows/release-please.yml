@@ -18,7 +18,7 @@ jobs:
       # Derives the next semantic version from Conventional Commits, keeps a
       # release pull request up to date, and on merge tags the commit and
       # publishes a GitHub Release. That release is what triggers release.yml.
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
         with:
           config-file: .release-please-config.json
