@@ -1,0 +1,11 @@
+# Build artefacts
+/bin/
+/dist/
+src/coverage.out
+src/coverage.html
+
+# Editors and OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
