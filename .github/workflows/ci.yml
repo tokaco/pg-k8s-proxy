@@ -325,51 +325,70 @@ jobs:
           kubectl logs -n pgproxy -l app.kubernetes.io/name=pg-k8s-proxy --tail=200
           exit 1
 
-      - name: Route a real psql session through the gateway
+      - name: Verify routing with a real psql client
         run: |
           set -uo pipefail
-          # This is the assertion that matters: a genuine client, naming only the
-          # database, reaches the instance that serves it.
-          #
-          # The retry lives inside the pod rather than around kubectl so that a
-          # transient failure costs one connection instead of a whole pod
-          # scheduling cycle, and so every attempt's real error reaches the log
-          # instead of being hidden behind a non-zero exit code.
-          kubectl run psql-e2e --rm -i --restart=Never \
-            --image=postgres:17-alpine \
-            --env=PGPASSWORD=not-a-real-password \
-            --command -- sh -c '
-              for attempt in $(seq 1 30); do
-                if out=$(psql -h pg-k8s-proxy.pgproxy.svc.cluster.local -p 5432 \
-                              -U postgres -d billing --no-psqlrc \
-                              -tAc "select current_database()" 2>&1); then
-                  echo "$out"
-                  exit 0
-                fi
-                echo "attempt $attempt failed: $out" >&2
-                sleep 3
-              done
-              exit 1
-            ' | tee /tmp/psql-out
-          echo "--- captured output ---"
-          cat /tmp/psql-out
-          grep -q "^billing$" /tmp/psql-out
 
-      - name: An unknown database must be rejected with SQLSTATE 3D000
-        run: |
-          set -euo pipefail
-          # A dropped socket would also "fail", so assert on the diagnostic the
-          # gateway is supposed to send.
-          kubectl run psql-e2e-missing --rm -i --restart=Never \
-            --image=postgres:17-alpine \
-            --env=PGPASSWORD=not-a-real-password \
-            --command -- \
-            psql -h pg-k8s-proxy.pgproxy.svc.cluster.local -p 5432 \
-                 -U postgres -d no-such-database --no-psqlrc \
-                 -tAc "select 1" 2>&1 | tee /tmp/psql-missing || true
-          echo "--- captured output ---"
-          cat /tmp/psql-missing
-          grep -q 'does not exist' /tmp/psql-missing
+          # kubectl run -i attaches a stream to the pod, and attach races a
+          # fast-exiting container: psql finishes before the stream is
+          # established and its output is simply lost, leaving an assertion to
+          # fail against an empty string. Creating the pod, waiting for a
+          # terminal phase, and reading the kubelet's logs is deterministic.
+          #
+          # The query is passed as a single argv element, so nothing has to be
+          # quoted through an inner shell.
+          run_psql() {
+            local name="$1" database="$2" query="$3"
+            kubectl delete pod "$name" --ignore-not-found --wait >/dev/null 2>&1
+            kubectl run "$name" --restart=Never --image=postgres:17-alpine \
+              --env=PGPASSWORD=not-a-real-password --command -- \
+              psql -h pg-k8s-proxy.pgproxy.svc.cluster.local -p 5432 \
+                   -U postgres -d "$database" --no-psqlrc -tAc "$query" >/dev/null
+
+            local phase=""
+            for _ in $(seq 1 60); do
+              phase=$(kubectl get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+              case "$phase" in Succeeded|Failed) break ;; esac
+              sleep 2
+            done
+
+            kubectl logs "$name" 2>&1
+            [ "$phase" = "Succeeded" ]
+          }
+
+          # A genuine client, naming only the database, must reach the instance
+          # that serves it. Retried because the backend may still be accepting
+          # its first connections when the route is already programmed.
+          output=""
+          for attempt in $(seq 1 10); do
+            if output=$(run_psql psql-e2e billing "select current_database()"); then
+              break
+            fi
+            echo "attempt ${attempt} failed:"
+            echo "${output}"
+            sleep 5
+          done
+
+          echo "--- current_database() through the gateway ---"
+          echo "${output}"
+          # Asserted explicitly rather than by letting a bare grep set the exit
+          # status: this script runs without "set -e" so the retry loop can
+          # inspect failures, and a trailing grep would be silently overridden
+          # by whatever command ran last.
+          if ! echo "${output}" | grep -qx billing; then
+            echo "::error::the gateway did not route to the billing instance; got: ${output}"
+            exit 1
+          fi
+
+          # An unknown database must produce the diagnostic a real server sends,
+          # not a dropped socket. The pod is expected to fail here.
+          missing=$(run_psql psql-e2e-missing no-such-database "select 1" || true)
+          echo "--- unrouted database ---"
+          echo "${missing}"
+          if ! echo "${missing}" | grep -q "does not exist"; then
+            echo "::error::an unrouted database did not produce a diagnostic; got: ${missing}"
+            exit 1
+          fi
 
       - name: Explicit routes must override discovered ones
         run: |
@@ -383,7 +402,7 @@ jobs:
             fi
             sleep 5
           done
-          # billing-override has priority 10, so the discovered route must lose.
+          # billing-override carries priority 10, so the discovered route loses.
           kubectl get postgresroute postgres-billing-discovered \
             -o jsonpath='{.status.conditions[?(@.type=="Accepted")].reason}' \
             | grep -q DatabaseNameConflict
