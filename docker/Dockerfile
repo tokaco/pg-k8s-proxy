@@ -2,7 +2,7 @@
 
 # Build the gateway. BUILDPLATFORM keeps the compile native even when
 # cross-building, since Go cross-compiles far faster than QEMU emulates.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
