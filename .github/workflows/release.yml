@@ -124,7 +124,7 @@ jobs:
       # Pinned to an exact version, unlike every other action here, because
       # upstream ships v4.x releases but publishes no floating v4 major tag;
       # its major aliases stop at v3, which is a release line behind.
-      - uses: sigstore/cosign-installer@v4.1.2
+      - uses: sigstore/cosign-installer@v4.1.3
 
       - uses: docker/login-action@v4
         with:
